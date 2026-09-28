@@ -31,19 +31,28 @@ class VisualizationSingleParticle3D(Visualization):
         panel_width = 0.14
         panel_bottom = 0.10
         panel_height = 0.78
-        minimum = np.min(energies)
-        maximum = np.max(energies)
+        energy_minimum = np.min(energies)
+        energy_maximum = np.max(energies)
 
-        # Degenerate levels need a non-zero scale in order to remain visible.
-        energy_range = maximum - minimum
+        # Use the same kind of human-friendly scale selection as Matplotlib:
+        # steps are 1, 2, 5, or 10 times a power of ten.  This keeps labels
+        # meaningful (for example, -15, -10, -5, 0 instead of -13.1, -9.85).
+        energy_range = energy_maximum - energy_minimum
         if np.isclose(energy_range, 0):
-            energy_range = max(abs(maximum), 1.0)
-            minimum -= energy_range / 2
-            maximum += energy_range / 2
-        else:
-            padding = energy_range * 0.05
-            minimum -= padding
-            maximum += padding
+            energy_range = max(abs(energy_maximum), 1.0)
+            energy_minimum -= energy_range / 2
+            energy_maximum += energy_range / 2
+
+        target_intervals = 4
+        raw_step = energy_range / target_intervals
+        step_scale = 10 ** np.floor(np.log10(raw_step))
+        step_fraction = raw_step / step_scale
+        step_multiplier = next(value for value in (1, 2, 5, 10)
+                               if step_fraction <= value)
+        tick_step = step_multiplier * step_scale
+        minimum = np.floor(energy_minimum / tick_step) * tick_step
+        maximum = np.ceil(energy_maximum / tick_step) * tick_step
+        tick_values = np.arange(minimum, maximum + tick_step * 0.5, tick_step)
 
         def energy_to_y(energy):
             return panel_bottom + panel_height * (energy - minimum) / (maximum - minimum)
@@ -52,14 +61,17 @@ class VisualizationSingleParticle3D(Visualization):
         # font size and line widths are specified in pixels, matching the
         # compact, framed Matplotlib energy axis used in the 1D view.
         from vtk import (vtkActor2D, vtkCellArray, vtkPoints, vtkPolyData,
-                         vtkPolyDataMapper2D, vtkTextActor)
+                         vtkPolyDataMapper2D, vtkTextActor, vtkCoordinate)
 
-        window_width, window_height = mlab.gcf().scene.get_size()
+        def normalized_viewport_coordinate():
+            coordinate = vtkCoordinate()
+            coordinate.SetCoordinateSystemToNormalizedViewport()
+            return coordinate
 
         def add_line(x1, y1, x2, y2, colour, line_width):
             points = vtkPoints()
-            points.InsertNextPoint(x1 * window_width, y1 * window_height, 0)
-            points.InsertNextPoint(x2 * window_width, y2 * window_height, 0)
+            points.InsertNextPoint(x1, y1, 0)
+            points.InsertNextPoint(x2, y2, 0)
             lines = vtkCellArray()
             lines.InsertNextCell(2)
             lines.InsertCellPoint(0)
@@ -69,6 +81,7 @@ class VisualizationSingleParticle3D(Visualization):
             polydata.SetLines(lines)
             mapper = vtkPolyDataMapper2D()
             mapper.SetInputData(polydata)
+            mapper.SetTransformCoordinate(normalized_viewport_coordinate())
             actor = vtkActor2D()
             actor.SetMapper(mapper)
             actor.GetProperty().SetColor(*colour)
@@ -77,16 +90,18 @@ class VisualizationSingleParticle3D(Visualization):
             return actor
 
         def add_label(text, x, y, font_size=14, justification='left', angle=0,
-                      colour=(0.8, 0.8, 0.8), bold=False):
+                      colour=(0.8, 0.8, 0.8), bold=False, italic=False):
             actor = vtkTextActor()
             actor.SetInput(text)
-            actor.SetPosition(x * window_width, y * window_height)
+            actor.GetPositionCoordinate().SetCoordinateSystemToNormalizedViewport()
+            actor.SetPosition(x, y)
             actor.SetOrientation(angle)
             text_property = actor.GetTextProperty()
             text_property.SetFontFamilyToArial()
             text_property.SetFontSize(font_size)
             text_property.SetColor(*colour)
             text_property.SetBold(bold)
+            text_property.SetItalic(italic)
             text_property.SetVerticalJustificationToCentered()
             if justification == 'center':
                 text_property.SetJustificationToCentered()
@@ -105,10 +120,17 @@ class VisualizationSingleParticle3D(Visualization):
         add_label('Energy Level', (panel_left + panel_right) / 2, 0.93,
                   font_size=18, justification='center', colour=(0.92, 0.92, 0.92),
                   bold=True)
-        add_label('Eₙ [eV]', panel_left - 0.055, 0.49, font_size=15,
-                  justification='center', angle=90, colour=(0.9, 0.9, 0.9), bold=True)
-        for energy in np.linspace(minimum, maximum, 5):
-            add_label(f'{energy:.3g}', panel_left - 0.018, energy_to_y(energy),
+        # VTK MathText accepts the same notation used by the 1D Matplotlib
+        # axis, including the italic E and properly positioned subscript N.
+        add_label('$E_N$ [eV]', panel_left - 0.055, 0.49, font_size=15,
+                  justification='center', angle=90, colour=(0.9, 0.9, 0.9),
+                  bold=True)
+
+        decimal_places = max(0, int(np.ceil(-np.log10(tick_step))))
+        for energy in tick_values:
+            tick_label = (f'{energy:.0f}' if np.isclose(energy, round(energy))
+                          else f'{energy:.{decimal_places}f}')
+            add_label(tick_label, panel_left - 0.018, energy_to_y(energy),
                       font_size=13, justification='right', colour=(0.82, 0.82, 0.82),
                       bold=True)
 
@@ -132,6 +154,7 @@ class VisualizationSingleParticle3D(Visualization):
     def plot_eigenstate(self, k, contrast_vals= [0.1, 0.25]):
         eigenstates = self.eigenstates.array
         mlab.figure(1, bgcolor=(0, 0, 0), size=(1000, 700))
+        mlab.clf()
         psi = eigenstates[k]
 
         if self.plot_type == 'volume':
@@ -242,6 +265,7 @@ class VisualizationSingleParticle3D(Visualization):
         eigenstates = self.eigenstates.array
         energies = self.eigenstates.energies
         mlab.figure(1, bgcolor=(0, 0, 0), size=(1000, 700))
+        mlab.clf()
 
         
         if self.plot_type == 'volume':
