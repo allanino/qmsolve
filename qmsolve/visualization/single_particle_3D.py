@@ -14,9 +14,124 @@ class VisualizationSingleParticle3D(Visualization):
     def slider_plot(self):
         raise NotImplementedError
 
+    def _add_energy_level_diagram(self, selected_state):
+        """Draw a screen-space energy-level diagram beside the 3D scene.
+
+        ``mlab.text`` is a 2D overlay, so the diagram remains at the right of
+        the window when the user rotates the eigenstate.  This is the Mayavi
+        equivalent of the energy axis used by the 1D and 2D visualizations.
+        """
+        energies = np.asarray(self.eigenstates.energies)
+        if energies.size == 0:
+            return
+
+        # Reserve the rightmost part of the window for the 2D panel.  The
+        # extra separation prevents its labels from competing with the 3D axes.
+        panel_left = 0.84
+        panel_width = 0.14
+        panel_bottom = 0.10
+        panel_height = 0.78
+        minimum = np.min(energies)
+        maximum = np.max(energies)
+
+        # Degenerate levels need a non-zero scale in order to remain visible.
+        energy_range = maximum - minimum
+        if np.isclose(energy_range, 0):
+            energy_range = max(abs(maximum), 1.0)
+            minimum -= energy_range / 2
+            maximum += energy_range / 2
+        else:
+            padding = energy_range * 0.05
+            minimum -= padding
+            maximum += padding
+
+        def energy_to_y(energy):
+            return panel_bottom + panel_height * (energy - minimum) / (maximum - minimum)
+
+        # Use native VTK 2D actors throughout.  Unlike ``mlab.text``, their
+        # font size and line widths are specified in pixels, matching the
+        # compact, framed Matplotlib energy axis used in the 1D view.
+        from vtk import (vtkActor2D, vtkCellArray, vtkPoints, vtkPolyData,
+                         vtkPolyDataMapper2D, vtkTextActor)
+
+        window_width, window_height = mlab.gcf().scene.get_size()
+
+        def add_line(x1, y1, x2, y2, colour, line_width):
+            points = vtkPoints()
+            points.InsertNextPoint(x1 * window_width, y1 * window_height, 0)
+            points.InsertNextPoint(x2 * window_width, y2 * window_height, 0)
+            lines = vtkCellArray()
+            lines.InsertNextCell(2)
+            lines.InsertCellPoint(0)
+            lines.InsertCellPoint(1)
+            polydata = vtkPolyData()
+            polydata.SetPoints(points)
+            polydata.SetLines(lines)
+            mapper = vtkPolyDataMapper2D()
+            mapper.SetInputData(polydata)
+            actor = vtkActor2D()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(*colour)
+            actor.GetProperty().SetLineWidth(line_width)
+            mlab.gcf().scene.renderer.add_actor(actor)
+            return actor
+
+        def add_label(text, x, y, font_size=14, justification='left', angle=0,
+                      colour=(0.8, 0.8, 0.8), bold=False):
+            actor = vtkTextActor()
+            actor.SetInput(text)
+            actor.SetPosition(x * window_width, y * window_height)
+            actor.SetOrientation(angle)
+            text_property = actor.GetTextProperty()
+            text_property.SetFontFamilyToArial()
+            text_property.SetFontSize(font_size)
+            text_property.SetColor(*colour)
+            text_property.SetBold(bold)
+            text_property.SetVerticalJustificationToCentered()
+            if justification == 'center':
+                text_property.SetJustificationToCentered()
+            elif justification == 'right':
+                text_property.SetJustificationToRight()
+            mlab.gcf().scene.renderer.add_actor(actor)
+
+        panel_right = panel_left + panel_width
+        panel_top = panel_bottom + panel_height
+        border_colour = (0.78, 0.78, 0.78)
+        add_line(panel_left, panel_bottom, panel_right, panel_bottom, border_colour, 2)
+        add_line(panel_right, panel_bottom, panel_right, panel_top, border_colour, 2)
+        add_line(panel_right, panel_top, panel_left, panel_top, border_colour, 2)
+        add_line(panel_left, panel_top, panel_left, panel_bottom, border_colour, 2)
+
+        add_label('Energy Level', (panel_left + panel_right) / 2, 0.93,
+                  font_size=18, justification='center', colour=(0.92, 0.92, 0.92),
+                  bold=True)
+        add_label('Eₙ [eV]', panel_left - 0.055, 0.49, font_size=15,
+                  justification='center', angle=90, colour=(0.9, 0.9, 0.9), bold=True)
+        for energy in np.linspace(minimum, maximum, 5):
+            add_label(f'{energy:.3g}', panel_left - 0.018, energy_to_y(energy),
+                      font_size=13, justification='right', colour=(0.82, 0.82, 0.82),
+                      bold=True)
+
+        level_actors = []
+        for state, energy in enumerate(energies):
+            colour = (1.0, 1.0, 0.0) if state == selected_state else (0.5, 0.5, 0.5)
+            level_actors.append(add_line(panel_left, energy_to_y(energy),
+                                         panel_right, energy_to_y(energy), colour,
+                                         3 if state == selected_state else 1))
+        return level_actors
+
+    @staticmethod
+    def _highlight_energy_level(level_actors, selected_state):
+        """Move the energy-level highlight when an animation changes state."""
+        for state, actor in enumerate(level_actors):
+            is_selected = state == selected_state
+            colour = (1.0, 1.0, 0.0) if is_selected else (0.5, 0.5, 0.5)
+            actor.GetProperty().SetColor(*colour)
+            actor.GetProperty().SetLineWidth(3 if is_selected else 1)
+
     def plot_eigenstate(self, k, contrast_vals= [0.1, 0.25]):
         eigenstates = self.eigenstates.array
-        mlab.figure(1, bgcolor=(0, 0, 0), size=(700, 700))
+        mlab.figure(1, bgcolor=(0, 0, 0), size=(1000, 700))
         psi = eigenstates[k]
 
         if self.plot_type == 'volume':
@@ -60,6 +175,7 @@ class VisualizationSingleParticle3D(Visualization):
             #azimuth angle
             φ = 30
             mlab.view(azimuth= φ,  distance=N*3.5)
+            self._add_energy_level_diagram(k)
             mlab.show()
 
 
@@ -79,6 +195,7 @@ class VisualizationSingleParticle3D(Visualization):
             #azimuth angle
             φ = 30
             mlab.view(azimuth= φ,  distance=N*3.5)
+            self._add_energy_level_diagram(k)
             mlab.show()
 
 
@@ -117,13 +234,14 @@ class VisualizationSingleParticle3D(Visualization):
             #azimuth angle
             φ = 30
             mlab.view(azimuth= φ,  distance=N*3.5)
+            self._add_energy_level_diagram(k)
 
             mlab.show()
 
     def animate(self,  contrast_vals= [0.1, 0.25]):
         eigenstates = self.eigenstates.array
         energies = self.eigenstates.energies
-        mlab.figure(1, bgcolor=(0, 0, 0), size=(700, 700))
+        mlab.figure(1, bgcolor=(0, 0, 0), size=(1000, 700))
 
         
         if self.plot_type == 'volume':
@@ -173,15 +291,18 @@ class VisualizationSingleParticle3D(Visualization):
             #azimuth angle
             φ = 30
             mlab.view(azimuth= φ,  distance=N*3.5)
+            level_actors = self._add_energy_level_diagram(0)
 
-
-            data = {'t': 0.0}
+            data = {'t': 0.0, 'state': 0}
             @mlab.animate(delay=10)
             def animation():
                 while (1):
                     data['t'] += 0.05
                     k1 = int(data['t']) % len(energies)
                     k2 = (int(data['t']) + 1) % len(energies)
+                    if k1 != data['state']:
+                        self._highlight_energy_level(level_actors, k1)
+                        data['state'] = k1
                     if data['t'] % 1.0 > 0.5:
                         t = (data['t'] - int(data['t']) - 0.5)
                         psi = (np.cos(np.pi*t)*eigenstates[k1]
@@ -255,15 +376,18 @@ class VisualizationSingleParticle3D(Visualization):
             #azimuth angle
             φ = 30
             mlab.view(azimuth= φ,  distance=N*3.5)
+            level_actors = self._add_energy_level_diagram(0)
 
-
-            data = {'t': 0.0}
+            data = {'t': 0.0, 'state': 0}
             @mlab.animate(delay=10)
             def animation():
                 while (1):
                     data['t'] += 0.05
                     k1 = int(data['t']) % len(energies)
                     k2 = (int(data['t']) + 1) % len(energies)
+                    if k1 != data['state']:
+                        self._highlight_energy_level(level_actors, k1)
+                        data['state'] = k1
                     if data['t'] % 1.0 > 0.5:
                         t = (data['t'] - int(data['t']) - 0.5)
                         psi = (np.cos(np.pi*t)*eigenstates[k1]
@@ -323,17 +447,18 @@ class VisualizationSingleParticle3D(Visualization):
             #azimuth angle
             φ = 30
             mlab.view(azimuth= φ,  distance=N*3.5)
+            level_actors = self._add_energy_level_diagram(0)
 
-
-
-
-            data = {'t': 0.0}
+            data = {'t': 0.0, 'state': 0}
             @mlab.animate(delay=10)
             def animation():
                 while (1):
                     data['t'] += 0.05
                     k1 = int(data['t']) % len(energies)
                     k2 = (int(data['t']) + 1) % len(energies)
+                    if k1 != data['state']:
+                        self._highlight_energy_level(level_actors, k1)
+                        data['state'] = k1
                     if data['t'] % 1.0 > 0.5:
                         t = (data['t'] - int(data['t']) - 0.5)
                         psi = (np.cos(np.pi*t)*eigenstates[k1]*np.exp( 1j*2*np.pi/10*k1) 
@@ -475,4 +600,3 @@ class VisualizationSingleParticle3D(Visualization):
                     yield
             animation()
             mlab.show()
-
