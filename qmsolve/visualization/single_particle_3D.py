@@ -11,8 +11,116 @@ class VisualizationSingleParticle3D(Visualization):
         self.eigenstates = eigenstates
         self.plot_type = 'volume'
 
-    def slider_plot(self):
-        raise NotImplementedError
+    def slider_plot(self, contrast_vals=[0.1, 0.25]):
+        """Interactively select a 3D eigenstate with a VTK slider.
+
+        This mirrors the 1D slider: moving to an integer state updates the
+        displayed wavefunction and the yellow line in the energy diagram.
+        """
+        eigenstates = self.eigenstates.array
+        if len(eigenstates) == 0:
+            return
+
+        mlab.figure(1, bgcolor=(0, 0, 0), size=(1000, 700))
+        mlab.clf()
+
+        abs_max = np.amax(np.abs(eigenstates))
+        L = self.eigenstates.extent / 2 / Å
+        N = self.eigenstates.N
+        colour_data = None
+
+        if self.plot_type == 'volume':
+            field = mlab.pipeline.scalar_field(eigenstates[0] / abs_max)
+            vol = mlab.pipeline.volume(field)
+            from tvtk.util import ctf
+            c = ctf.save_ctfs(vol._volume_property)
+            c['rgb'] = [[-0.45, 0.3, 0.3, 1.0], [-0.001, 0.0, 0.0, 1.0],
+                        [0.0, 0.0, 0.0, 0.0], [0.001, 1.0, 0.0, 0.0],
+                        [0.45, 1.0, 0.3, 0.3]]
+            c['alpha'] = [[-0.5, 1.0], [-contrast_vals[1], 1.0],
+                          [-contrast_vals[0], 0.0], [0, 0.0],
+                          [contrast_vals[0], 0.0], [contrast_vals[1], 1.0],
+                          [0.5, 1.0]]
+            ctf.load_ctfs(c, vol._volume_property)
+            vol.update_ctf = True
+        elif self.plot_type == 'abs-volume':
+            field = mlab.pipeline.scalar_field(np.abs(eigenstates[0] / abs_max))
+            mlab.pipeline.volume(field, vmin=contrast_vals[0], vmax=contrast_vals[1])
+        elif self.plot_type == 'contour':
+            psi = eigenstates[0] / abs_max
+            field = mlab.pipeline.scalar_field(np.abs(psi))
+            colour_data = np.angle(psi.T.ravel()) % (2 * np.pi)
+            field.image_data.point_data.add_array(colour_data)
+            field.image_data.point_data.get_array(1).name = 'phase'
+            field.update()
+            contour = mlab.pipeline.contour(
+                mlab.pipeline.set_active_attribute(field, point_scalars='scalar'))
+            contour.filter.contours = [np.mean(contrast_vals)]
+            surface = mlab.pipeline.surface(
+                mlab.pipeline.set_active_attribute(contour, point_scalars='phase'),
+                colormap='hsv', vmin=0.0, vmax=2 * np.pi)
+            surface.scene.light_manager.light_mode = 'vtk'
+            surface.actor.property.interpolation = 'phong'
+        else:
+            raise ValueError(f'Unknown 3D plot type: {self.plot_type}')
+
+        mlab.outline()
+        mlab.axes(xlabel='x [Å]', ylabel='y [Å]', zlabel='z [Å]', nb_labels=6,
+                  ranges=(-L, L, -L, L, -L, L))
+        mlab.view(azimuth=30, distance=N * 3.5)
+        level_actors = self._add_energy_level_diagram(0)
+
+        from vtk import vtkCommand, vtkSliderRepresentation2D, vtkSliderWidget
+        representation = vtkSliderRepresentation2D()
+        representation.GetPoint1Coordinate().SetCoordinateSystemToNormalizedDisplay()
+        # The title is drawn below the rail; keep enough lower margin so it
+        # remains visible in both the Qt window and notebook backends.
+        representation.GetPoint1Coordinate().SetValue(0.12, 0.075)
+        representation.GetPoint2Coordinate().SetCoordinateSystemToNormalizedDisplay()
+        representation.GetPoint2Coordinate().SetValue(0.73, 0.075)
+        representation.SetMinimumValue(0)
+        representation.SetMaximumValue(len(eigenstates) - 1)
+        representation.SetValue(0)
+        representation.SetTitleText('state')
+        representation.SetLabelFormat('%.0f')
+        representation.SetSliderLength(0.02)
+        representation.SetSliderWidth(0.018)
+        representation.SetTubeWidth(0.004)
+        representation.SetEndCapLength(0.01)
+        representation.SetEndCapWidth(0.012)
+        representation.GetTitleProperty().SetColor(0.9, 0.9, 0.9)
+        representation.GetTitleProperty().SetFontSize(14)
+        representation.GetLabelProperty().SetColor(0.9, 0.9, 0.9)
+        representation.GetLabelProperty().SetFontSize(14)
+        representation.GetTubeProperty().SetColor(0.5, 0.5, 0.5)
+        representation.GetCapProperty().SetColor(0.5, 0.5, 0.5)
+        representation.GetSliderProperty().SetColor(0.36, 0.02, 1.0)
+        representation.GetSelectedProperty().SetColor(0.36, 0.02, 1.0)
+
+        slider = vtkSliderWidget()
+        slider.SetInteractor(mlab.gcf().scene.interactor._vtk_obj)
+        slider.SetRepresentation(representation)
+        slider.SetAnimationModeToAnimate()
+
+        def update_slider(_object, _event):
+            state = int(round(representation.GetValue()))
+            representation.SetValue(state)
+            psi = eigenstates[state] / abs_max
+            if self.plot_type == 'abs-volume':
+                field.mlab_source.scalars = np.abs(psi)
+            elif self.plot_type == 'contour':
+                np.copyto(colour_data, np.angle(psi.T.ravel()) % (2 * np.pi))
+                field.mlab_source.scalars = np.abs(psi)
+            else:
+                field.mlab_source.scalars = psi
+            self._highlight_energy_level(level_actors, state)
+            mlab.gcf().scene.render()
+
+        slider.AddObserver(vtkCommand.InteractionEvent, update_slider)
+        slider.EnabledOn()
+        # Keep the widget alive for the lifetime of the Mayavi scene.
+        self._slider_widget = slider
+        mlab.show()
 
     def _add_energy_level_diagram(self, selected_state):
         """Draw a screen-space energy-level diagram beside the 3D scene.
