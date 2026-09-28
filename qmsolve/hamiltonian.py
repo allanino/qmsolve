@@ -194,7 +194,7 @@ class Hamiltonian:
 
             from cupyx.scipy.sparse.linalg import lobpcg, LinearOperator
             from cupyx.scipy.sparse import diags
-            from cupyx.scipy.sparse.csr import csr_matrix
+            from cupyx.scipy.sparse import csr_matrix
             H = csr_matrix(H)
 
             if lobpcg_args['preconditioner'] == 'jacobi':
